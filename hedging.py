@@ -10,7 +10,7 @@ etf_pairs = [
 
 start_date = '2020-01-01'
 end_date = '2025-07-10'
-rolling_windows_years = [1, 2]
+rolling_windows_years = [2,5]
 
 # Funzione per calcolare CAGR
 def calculate_cagr(start_price, end_price, years):
