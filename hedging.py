@@ -4,8 +4,8 @@ import matplotlib.pyplot as plt
 
 # Lista ETF: (non-hedged, hedged)
 etf_pairs = [
-    ('CSPX.L', 'IUSE.MI'),
-    ('EQQQ.L', 'HNDX.DE'),
+    ('CSPX.L', 'IUSE.MI'), #SP500 in dollar, sp500 in euro hedgato in dollari
+    ('EQQQ.L', 'HNDX.DE'), #stessa cosa per il nasdaq
 ]
 
 start_date = '2020-01-01'
