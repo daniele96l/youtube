@@ -2,518 +2,728 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
 import random
-import math
-import re
 
-# =========================================================
-# Parametri principali
-# =========================================================
-YEARS = 10
-SIMS = 1000
-ANNUAL_INVEST = 12000.0
-SEED = 42
-RF = 0.0   # risk-free per Sharpe (R_to_V) in forma decimale (0.02 = 2%)
+def get_sp500_data(start_date, end_date):
+    """Get MSCI World ETF data from CSV file"""
+    try:
+        # Load data from CSV file
+        csv_file = "iShares Core MSCI World UCITS ETF USD (Acc).csv"
+        data = pd.read_csv(csv_file, skiprows=2)  # Skip the header row and ticker row
+        
+        # The first column is empty, so we need to use the first column as Date
+        data.columns = ['Date', 'Close', 'High', 'Low', 'Open', 'Volume']
+        
+        # Convert Date column to datetime
+        data['Date'] = pd.to_datetime(data['Date'])
+        
+        # Filter data for the requested period
+        filtered_data = data[(data['Date'] >= start_date) & (data['Date'] <= end_date)]
+        
+        if not filtered_data.empty:
+            print(f"Successfully loaded MSCI World ETF data from CSV")
+            print(f"Data period: {filtered_data['Date'].min().date()} to {filtered_data['Date'].max().date()}")
+            return filtered_data.set_index('Date')['Close']
+        else:
+            print("No data found for the requested period, using synthetic data")
+            return generate_synthetic_data(start_date, end_date)
+            
+    except Exception as e:
+        print(f"Error loading CSV data: {e}")
+        print("Using synthetic data based on historical MSCI World parameters")
+        return generate_synthetic_data(start_date, end_date)
 
-# Solo soglie Buy The Dip — include 0% (investe sempre tutto). Nessuna baseline.
-DIP_THRESHOLDS = [0.00, 0.05, 0.10, 0.20, 0.30, 0.40]
+def generate_synthetic_data(start_date, end_date):
+    """Generate synthetic data based on historical MSCI World parameters"""
+    days = (end_date - start_date).days
+    dates = pd.date_range(start=start_date, end=end_date, freq='D')
+    
+    # Historical MSCI World parameters (monthly returns)
+    mean_return = 0.008  # ~0.8% monthly return
+    std_return = 0.040   # ~4.0% monthly volatility
+    
+    # Generate synthetic daily returns
+    daily_mean = mean_return / 30
+    daily_std = std_return / np.sqrt(30)
+    
+    returns = np.random.normal(daily_mean, daily_std, len(dates))
+    prices = [100]  # Starting price
+    
+    for ret in returns:
+        prices.append(prices[-1] * (1 + ret))
+    
+    return pd.Series(prices[:-1], index=dates)
 
-# Esempi per i grafici BTD (griglia)
-EXAMPLES_PER_CASE = 4   # quanti esempi per soglia
-EXAMPLE_GRID_COLS = 2   # colonne della griglia (righe calcolate automaticamente)
+def simulate_market_crash(returns, crash_threshold=0.05):
+    """Simulate market crashes based on historical returns"""
+    crashes = []
+    peak = 1.0
+    current_value = 1.0
+    
+    for i, ret in enumerate(returns):
+        current_value *= (1 + ret)
+        if current_value > peak:
+            peak = current_value
+        
+        # Check if we have a crash from peak
+        if (peak - current_value) / peak >= crash_threshold:
+            crashes.append(i)
+            peak = current_value  # Reset peak after crash
+    
+    return crashes
 
-# Pannelli principali: % investita fissa
-FIXED_PCTS = [0.50, 0.70, 0.90]
+def strategy_1_regular_investing(monthly_investment, returns):
+    """Strategy 1: Invest full amount every month"""
+    portfolio_values = []
+    shares_owned = 0
+    price = 100  # Starting price
+    
+    for i, ret in enumerate(returns):
+        price *= (1 + ret)
+        shares_bought = monthly_investment / price
+        shares_owned += shares_bought
+        portfolio_value = shares_owned * price
+        portfolio_values.append(portfolio_value)
+    
+    return portfolio_values, shares_owned
 
-T = YEARS * 12
-rng = np.random.default_rng(SEED)
-random.seed(SEED)
+def strategy_2_dip_buying(monthly_investment, dip_reserve, returns, crashes):
+    """Strategy 2: Invest 80%, save 20%, buy dips"""
+    portfolio_values = []
+    shares_owned = 0
+    price = 100  # Starting price
+    saved_money = 0
+    dip_purchases = []
+    
+    for i, ret in enumerate(returns):
+        price *= (1 + ret)
+        
+        # Regular monthly investment (80%)
+        regular_investment = monthly_investment * 0.8
+        shares_bought = regular_investment / price
+        shares_owned += shares_bought
+        
+        # Save 20% for dips
+        saved_money += monthly_investment * 0.2
+        
+        # Check if this is a crash point
+        if i in crashes:
+            if saved_money > 0:
+                dip_shares = saved_money / price
+                shares_owned += dip_shares
+                dip_purchases.append((i, price, saved_money, dip_shares))
+                saved_money = 0
+        
+        portfolio_value = shares_owned * price
+        portfolio_values.append(portfolio_value)
+    
+    return portfolio_values, shares_owned, dip_purchases
 
-# =========================================================
-# Dati S&P 500: rendimenti mensili storici
-# =========================================================
-sp500 = yf.Ticker("^GSPC")
-sp500_data = sp500.history(period="max")
-if sp500_data.empty:
-    raise ValueError("Impossibile scaricare i dati S&P 500")
+def calculate_cagr(initial_value, final_value, years):
+    """Calculate Compound Annual Growth Rate"""
+    if initial_value <= 0:
+        return 0
+    return (final_value / initial_value) ** (1 / years) - 1
 
-sp500_close = sp500_data["Close"]
-# Ensure the index is datetime and fix the deprecated 'M' to 'ME'
-monthly_returns_hist = sp500_close.resample("ME").last().pct_change().dropna().values
-if len(monthly_returns_hist) < 12:
-    raise ValueError("Storico mensile insufficiente per la simulazione.")
+def calculate_portfolio_cagr(portfolio_values, monthly_investment, years):
+    """Calculate CAGR based on portfolio growth"""
+    if len(portfolio_values) < 2:
+        return 0
+    
+    initial_value = portfolio_values[0]
+    final_value = portfolio_values[-1]
+    
+    # Calculate CAGR based on portfolio growth
+    if initial_value <= 0:
+        return 0
+    
+    return (final_value / initial_value) ** (1 / years) - 1
 
-# =========================================================
-# Campionamento Monte Carlo UNA VOLTA (stessa base R per tutti i casi)
-# =========================================================
-R_base = rng.choice(monthly_returns_hist, size=(SIMS, T), replace=True)
+def calculate_volatility(portfolio_values):
+    """Calculate volatility (standard deviation of returns) excluding deposits"""
+    if len(portfolio_values) < 2:
+        return 0
+    
+    # Calculate returns (excluding deposits)
+    returns = []
+    for i in range(1, len(portfolio_values)):
+        ret = (portfolio_values[i] - portfolio_values[i-1]) / portfolio_values[i-1]
+        returns.append(ret)
+    
+    return np.std(returns) * np.sqrt(12)  # Annualized volatility
 
-# Indice di mercato cumulato (parte da 1.0) per ogni simulazione
-MARKET_LEVELS = np.cumprod(1.0 + R_base, axis=1)
-
-# =========================================================
-# Simulatore (vettorizzato su SIMS)
-# =========================================================
-def simulate_pct_with_strategy(pct: float, annual_invest: float, R: np.ndarray, dip_threshold: float):
-    """
-    pct: quota del contributo mensile destinata all'investimento continuo (PAC).
-    dip_threshold:
-      - 0.0   -> Caso speciale "investe sempre tutto": 100% dei flussi va subito investito, nessun cash.
-      - >0.0  -> Regola BTD classica: accumula cash e deploya quando drawdown raggiunge la soglia.
-    Nota: non esiste più la 'baseline' (dip_threshold=None).
-    """
-    sims, horizon = R.shape
-
-    # Caso speciale: BTD 0% = investe sempre tutto. Ignoriamo pct e forziamo 100% investito.
-    if dip_threshold <= 0.0:
-        c_inv = (annual_invest) / 12.0
-        c_cash = 0.0
-    else:
-        c_inv = (annual_invest * pct) / 12.0
-        c_cash = (annual_invest * (1.0 - pct)) / 12.0
-
-    invested = np.zeros((sims, horizon), dtype=float)
-    cash     = np.zeros((sims, horizon), dtype=float)
-    trigger  = np.zeros((sims, horizon), dtype=bool)
-    deploy_amounts = np.zeros((sims, horizon), dtype=float)
-
-    invested_cur = np.zeros(sims, dtype=float)
-    cash_cur     = np.zeros(sims, dtype=float)
-
-    level_pre = np.ones((sims,), dtype=float)
-    roll_max  = np.ones((sims,), dtype=float)
-    prev_dd   = np.zeros((sims,), dtype=float)
-
-    for t in range(horizon):
-        drawdown = 1.0 - (level_pre / roll_max)
-
-        # Regola BTD: attiva solo se threshold > 0
-        if dip_threshold > 0.0:
-            mask = (prev_dd < dip_threshold) & (drawdown >= dip_threshold)
-            if np.any(mask):
-                deploy_amounts[mask, t] = cash_cur[mask]     # deploy = trasferimento interno
-                invested_cur[mask] += cash_cur[mask]
-                trigger[mask, t] = True
-                cash_cur[mask] = 0.0
-
-        prev_dd = drawdown
-
-        # contributi del mese (flussi esterni)
-        invested_cur += c_inv
-        cash_cur     += c_cash
-
-        # rendimento del mese (solo sulla parte investita)
-        invested_cur *= (1.0 + R[:, t])
-
-        invested[:, t] = invested_cur
-        cash[:, t]     = cash_cur
-
-        level_pre *= (1.0 + R[:, t])
-        roll_max = np.maximum(roll_max, level_pre)
-
-    total = invested + cash
-    return invested, cash, total, trigger, deploy_amounts
-
-# =========================================================
-# Wrapper mediane + paths (solo BTD)
-# =========================================================
-def summarize_over_time_fixed_pct(fixed_pct: float, thresholds: list[float], R: np.ndarray):
-    """
-    Mediane nel tempo per le sole soglie BTD (0%, 5%, 10%, ...), a % investita fissa.
-    """
-    out = {}
-    for thr in thresholds:
-        inv, cash, tot, _, _ = simulate_pct_with_strategy(fixed_pct, ANNUAL_INVEST, R, dip_threshold=thr)
-        out[f"BTD {int(thr*100)}%"] = {
-            "invested_p50": np.percentile(inv, 50, axis=0),
-            "cash_p50":     np.percentile(cash, 50, axis=0),
-            "total_p50":    np.percentile(tot, 50, axis=0),
+def run_monte_carlo_simulation(n_simulations=1000, years=10):
+    """Run Monte Carlo simulation comparing multiple strategies"""
+    results = []
+    thresholds = [0.05, 0.10, 0.20, 0.30]  # 5%, 10%, 20%, 30%
+    
+    # Get historical MSCI World ETF data for realistic parameters
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=365*20)  # 20 years of data
+    sp500_data = get_sp500_data(start_date, end_date)
+    
+    # Calculate historical returns
+    returns = sp500_data.pct_change().dropna()
+    mean_return = returns.mean()
+    std_return = returns.std()
+    
+    print(f"Historical MSCI World - Mean return: {mean_return:.4f}, Std: {std_return:.4f}")
+    
+    for sim in range(n_simulations):
+        # Generate random returns for 5 years (60 months)
+        random_returns = np.random.normal(mean_return, std_return, years * 12)
+        
+        # Run regular strategy
+        portfolio_1_values, shares_1 = strategy_1_regular_investing(1000, random_returns)
+        
+        sim_result = {
+            'simulation': sim,
+            'strategy_1_value': portfolio_1_values[-1],
+            'strategy_1_cagr': calculate_portfolio_cagr(portfolio_1_values, 1000, years),
+            'strategy_1_volatility': calculate_volatility(portfolio_1_values),
+            'strategy_1_shares': shares_1
         }
-    return out
+        
+        # Run dip buying strategies for different thresholds
+        for threshold in thresholds:
+            crashes = simulate_market_crash(random_returns, threshold)
+            portfolio_2_values, shares_2, dip_purchases = strategy_2_dip_buying(1000, 200, random_returns, crashes)
+            
+            sim_result[f'strategy_2_{int(threshold*100)}p_value'] = portfolio_2_values[-1]
+            sim_result[f'strategy_2_{int(threshold*100)}p_cagr'] = calculate_portfolio_cagr(portfolio_2_values, 1000, years)
+            sim_result[f'strategy_2_{int(threshold*100)}p_volatility'] = calculate_volatility(portfolio_2_values)
+            sim_result[f'strategy_2_{int(threshold*100)}p_shares'] = shares_2
+            sim_result[f'strategy_2_{int(threshold*100)}p_crashes'] = len(crashes)
+            sim_result[f'strategy_2_{int(threshold*100)}p_dip_purchases'] = len(dip_purchases)
+        
+        results.append(sim_result)
+    
+    return pd.DataFrame(results)
 
-def summarize_with_paths_fixed_pct(fixed_pct: float, thresholds: list[float], R: np.ndarray):
-    """
-    Per esempi e metriche: restituisce paths e trigger per ogni soglia.
-    """
-    invested_paths = {}
-    cash_paths = {}
-    total_paths = {}
-    trigger_paths = {}
-    deploy_paths = {}
-    for thr in thresholds:
-        inv, cash, tot, trig, dep = simulate_pct_with_strategy(fixed_pct, ANNUAL_INVEST, R, dip_threshold=thr)
-        key = f"BTD {int(thr*100)}%"
-        invested_paths[key] = inv
-        cash_paths[key] = cash
-        total_paths[key] = tot
-        trigger_paths[key] = trig
-        deploy_paths[key] = dep
-    return invested_paths, cash_paths, total_paths, trigger_paths, deploy_paths
+def analyze_results(results):
+    """Analyze and display simulation results"""
+    print("\n=== RISULTATI SIMULAZIONE MONTE CARLO ===")
+    print(f"Numero di simulazioni: {len(results)}")
+    print(f"Periodo: 10 anni")
+    
+    strategies = ['strategy_1'] + [f'strategy_2_{int(t*100)}p' for t in [0.05, 0.10, 0.20, 0.30]]
+    threshold_names = ['Regolare'] + ['5%', '10%', '20%', '30%']
+    
+    print(f"\n{'Strategia':<12} {'Valore Medio':<15} {'CAGR':<10} {'Volatilità':<12} {'Vittorie':<10}")
+    print("-" * 70)
+    
+    for i, strategy in enumerate(strategies):
+        value_col = f'{strategy}_value'
+        cagr_col = f'{strategy}_cagr'
+        vol_col = f'{strategy}_volatility'
+        
+        mean_value = results[value_col].mean()
+        mean_cagr = results[cagr_col].mean()
+        mean_vol = results[vol_col].mean()
+        
+        # Calculate win rate vs regular strategy
+        wins = (results[value_col] > results['strategy_1_value']).sum()
+        win_rate = wins / len(results) * 100
+        
+        print(f"{threshold_names[i]:<12} €{mean_value:>10,.0f} {mean_cagr:>8.2%} {mean_vol:>10.2%} {win_rate:>8.1f}%")
+    
+    return results
 
-# =========================================================
-# Metriche TWR (netto dei depositi) su portafoglio totale
-# =========================================================
-def compute_final_and_twr_metrics(total_paths: np.ndarray,
-                                  invested_paths: np.ndarray,
-                                  cash_paths: np.ndarray,
-                                  R: np.ndarray):
-    """
-    Calcola:
-      - final_vals: capitale finale (investito + cash)
-      - twr_monthly: rendimenti mensili TWR del portafoglio (flussi esterni rimossi)
-      - R_ann_twr: rendimento annuo TWR (geometrico)
-      - Vol_ann_twr: volatilità annua dei rendimenti TWR (std mensile * sqrt(12))
-    """
-    final_vals = total_paths[:, -1]
-    base_t = invested_paths / (1.0 + R) + cash_paths        # valore prima del rendimento (post-flussi esterni)
-    total_end_t = invested_paths + cash_paths               # valore a fine mese
+def show_example_simulation():
+    """Show a specific example simulation with visualization"""
+    print("\n=== ESEMPIO DI SIMULAZIONE SPECIFICA ===")
+    
+    # Get real S&P 500 data for a specific period
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=365*10)
+    sp500_data = get_sp500_data(start_date, end_date)
+    
+    # Calculate returns
+    returns = sp500_data.pct_change().dropna()
+    
+    # Run strategies
+    portfolio_1_values, shares_1 = strategy_1_regular_investing(1000, returns)
+    
+    thresholds = [0.05, 0.10, 0.20, 0.30]
+    threshold_names = ['5%', '10%', '20%', '30%']
+    
+    print(f"Periodo analizzato: {start_date.date()} - {end_date.date()}")
+    print(f"Strategia 1 (regolare): €{portfolio_1_values[-1]:,.2f}")
+    print(f"CAGR: {calculate_portfolio_cagr(portfolio_1_values, 1000, 10):.2%}")
+    print(f"Volatilità: {calculate_volatility(portfolio_1_values) * 100:.2f}%")
+    
+    # Create comprehensive visualization grid (3x2)
+    fig = plt.figure(figsize=(24, 15))
+    fig.suptitle('Simulazione Strategia "Buy the Dip" - Analisi Completa', fontsize=20, fontweight='bold')
+    
+    # Plot 1: Price evolution with crash points for different thresholds
+    plt.subplot(4, 2, 1)
+    price_evolution = [100]
+    for ret in returns:
+        price_evolution.append(price_evolution[-1] * (1 + ret))
+    
+    plt.plot(price_evolution, label='MSCI World ETF Price', linewidth=2, color='black')
+    
+    colors = ['red', 'orange', 'green', 'blue']
+    for i, threshold in enumerate(thresholds):
+        crashes = simulate_market_crash(returns, threshold)
+        for crash_month in crashes:
+            if crash_month < len(price_evolution):
+                plt.scatter(crash_month, price_evolution[crash_month], 
+                           color=colors[i], s=50, alpha=0.7, 
+                           label=f'Crash {threshold_names[i]}' if crash_month == crashes[0] else "")
+    
+    plt.title('Evoluzione Prezzo MSCI World ETF con Punti di Crash', fontsize=14, fontweight='bold')
+    plt.xlabel('Mesi')
+    plt.ylabel('Prezzo')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Plot 2: Portfolio comparison over time
+    plt.subplot(4, 2, 2)
+    
+    plt.plot(portfolio_1_values, label='Strategia 1: Investimento Regolare', linewidth=3, color='black')
+    
+    for i, threshold in enumerate(thresholds):
+        crashes = simulate_market_crash(returns, threshold)
+        portfolio_2_values, shares_2, dip_purchases = strategy_2_dip_buying(1000, 200, returns, crashes)
+        plt.plot(portfolio_2_values, label=f'Strategia 2: Buy the Dip {threshold_names[i]}', 
+                linewidth=2, color=colors[i], alpha=0.8)
+    
+    plt.title('Confronto Portfolio nel Tempo', fontsize=14, fontweight='bold')
+    plt.xlabel('Mesi')
+    plt.ylabel('Valore Portfolio (€)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Plot 3: Saved money evolution for different thresholds
+    plt.subplot(4, 2, 3)
+    
+    for i, threshold in enumerate(thresholds):
+        saved_money_evolution = []
+        saved_money = 0
+        
+        for j, ret in enumerate(returns):
+            saved_money += 200  # Save €200 per month
+            
+            # Check if this is a crash point
+            crashes = simulate_market_crash(returns, threshold)
+            if j in crashes:
+                saved_money = 0  # Spend all saved money
+            
+            saved_money_evolution.append(saved_money)
+        
+        plt.plot(saved_money_evolution, label=f'Soldi Risparmiati {threshold_names[i]}', 
+                linewidth=2, color=colors[i], alpha=0.8)
+    
+    plt.title('Evoluzione Soldi Risparmiati per Threshold', fontsize=14, fontweight='bold')
+    plt.xlabel('Mesi')
+    plt.ylabel('Soldi Risparmiati (€)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Plot 4: Total wealth comparison (portfolio + saved money)
+    plt.subplot(4, 2, 4)
+    
+    # Regular strategy (no saved money)
+    plt.plot(portfolio_1_values, label='Strategia 1: Investimento Regolare', linewidth=3, color='black')
+    
+    for i, threshold in enumerate(thresholds):
+        crashes = simulate_market_crash(returns, threshold)
+        portfolio_2_values, shares_2, dip_purchases = strategy_2_dip_buying(1000, 200, returns, crashes)
+        
+        # Calculate total wealth (portfolio + saved money)
+        total_wealth = []
+        saved_money = 0
+        
+        for j, portfolio_value in enumerate(portfolio_2_values):
+            saved_money += 200  # Save €200 per month
+            
+            # Check if this is a crash point
+            if j in crashes:
+                saved_money = 0  # Spend all saved money
+            
+            total_wealth.append(portfolio_value + saved_money)
+        
+        plt.plot(total_wealth, label=f'Patrimonio Totale {threshold_names[i]}', 
+                linewidth=2, color=colors[i], alpha=0.8)
+    
+    plt.title('Confronto Patrimonio Totale (Portfolio + Soldi Risparmiati)', fontsize=14, fontweight='bold')
+    plt.xlabel('Mesi')
+    plt.ylabel('Patrimonio Totale (€)')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
 
-    with np.errstate(divide='ignore', invalid='ignore'):
-        twr_monthly = (total_end_t - base_t) / base_t
+    
+    # Plot 5: Final portfolio values comparison
+    plt.subplot(3, 2, 5)
+    
+    strategy_names = ['Regolare'] + [f'Buy Dip {t}%' for t in threshold_names]
+    final_values = [portfolio_1_values[-1]]
+    
+    for threshold in thresholds:
+        crashes = simulate_market_crash(returns, threshold)
+        portfolio_2_values, shares_2, dip_purchases = strategy_2_dip_buying(1000, 200, returns, crashes)
+        final_values.append(portfolio_2_values[-1])
+    
+    bars = plt.bar(strategy_names, final_values, color=['black'] + colors, alpha=0.8, edgecolor='black', linewidth=1)
+    plt.title('Confronto Valori Finali Portfolio', fontsize=14, fontweight='bold')
+    plt.ylabel('Valore Finale (€)')
+    plt.xticks(rotation=45, ha='right')
+    plt.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars
+    for bar, value in zip(bars, final_values):
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                f'€{value:,.0f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+    
+    # Plot 6: Crash frequency analysis
+    plt.subplot(3, 2, 6)
+    
+    crash_counts = []
+    for threshold in thresholds:
+        crashes = simulate_market_crash(returns, threshold)
+        crash_counts.append(len(crashes))
+    
+    bars = plt.bar(threshold_names, crash_counts, color=colors, alpha=0.8, edgecolor='black', linewidth=1)
+    plt.title('Frequenza Crash per Threshold', fontsize=14, fontweight='bold')
+    plt.xlabel('Threshold')
+    plt.ylabel('Numero di Crash')
+    plt.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels on bars
+    for bar, value in zip(bars, crash_counts):
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                str(value), ha='center', va='bottom', fontsize=12, fontweight='bold')
+    
 
-    vol_ann_twr = np.nanstd(twr_monthly, axis=1) * np.sqrt(12)
-
-    twr_monthly_clean = np.where(np.isnan(twr_monthly), 0.0, twr_monthly)
-    growth = np.prod(1.0 + twr_monthly_clean, axis=1)
-    R_ann_twr = growth**(12.0 / twr_monthly_clean.shape[1]) - 1.0
-
-    return final_vals, vol_ann_twr, R_ann_twr
-
-def metrics_for_fixed_pct_across_thresholds(fixed_pct: float, thresholds: list[float], R: np.ndarray):
-    """
-    Calcola TWR (rendimento, volatilità) e Sharpe per le sole soglie BTD, alla % investita fissa.
-    """
-    labels = []; vols = []; rets = []; sharpes = []; finals = []
-
-    for thr in thresholds:
-        inv, cash, tot, _, _ = simulate_pct_with_strategy(fixed_pct, ANNUAL_INVEST, R, dip_threshold=thr)
-        f, v_twr, r_twr = compute_final_and_twr_metrics(tot, inv, cash, R)
-        r50 = np.percentile(r_twr, 50)
-        v50 = np.percentile(v_twr, 50)
-        sh  = (r50 - RF) / v50 if v50 > 0 else np.nan
-        labels.append(f"BTD {int(thr*100)}%")
-        vols.append(v50 * 100); rets.append(r50 * 100); sharpes.append(sh)
-        finals.append(np.percentile(f, 50))
-
-    df = pd.DataFrame({
-        "Scenario": labels,
-        "R_%": rets,
-        "V_%": vols,
-        "Sharpe_TWR": sharpes,
-        "Capitale_finale_p50": finals,
-    })
-    # Ordine naturale per soglia crescente
-    order = [f"BTD {int(x*100)}%" for x in thresholds]
-    df["Scenario"] = pd.Categorical(df["Scenario"], categories=order, ordered=True)
-    return df.sort_values("Scenario").reset_index(drop=True)
-
-# =========================================================
-# Plot helpers
-# =========================================================
-months = np.arange(1, T+1)
-
-def _sort_btd_labels(labels):
-    """
-    Ordina etichette tipo 'BTD 0%', 'BTD 5%', ... per valore numerico.
-    """
-    def extract_num(s):
-        m = re.search(r'(\d+)', s)
-        return int(m.group(1)) if m else 10**9
-    return sorted(labels, key=extract_num)
-
-def plot_total_over_time_fixed_pct(results_by_thr: dict, fixed_pct: float):
-    plt.figure(figsize=(12,7))
-    for lbl in _sort_btd_labels(list(results_by_thr.keys())):
-        d = results_by_thr[lbl]
-        plt.plot(months, d["total_p50"], label=lbl, linewidth=1.8)
-    plt.title(f"Totale (Investito + Liquidità) — Mediana ({int(fixed_pct*100)}% investito)")
-    plt.xlabel("Mese"); plt.ylabel("Valore (€)")
-    plt.grid(True, alpha=0.3); plt.legend(ncol=3); plt.tight_layout(); plt.show()
-
-def plot_invested_vs_cash_grid_fixed_pct(results_by_thr: dict, fixed_pct: float):
-    labels = _sort_btd_labels(list(results_by_thr.keys()))
-    n = len(labels)
-    cols = min(3, n)
-    rows = int(np.ceil(n / cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(6*cols, 3.7*rows), sharex=True, sharey=True)
-    axes = np.array(axes).reshape(-1, cols)
-    for i, lbl in enumerate(labels):
-        r, c = divmod(i, cols)
-        ax = axes[r, c]
-        d = results_by_thr[lbl]
-        ax.plot(months, d["invested_p50"], label="Investito (med)", linewidth=1.8)
-        ax.plot(months, d["cash_p50"],     label="Risparmiati (med)", linewidth=1.8, linestyle="--")
-        ax.set_title(lbl); ax.grid(True, alpha=0.3)
-        if r == rows-1: ax.set_xlabel("Mese")
-        if c == 0: ax.set_ylabel("€")
-    handles, lab = axes[0,0].get_legend_handles_labels()
-    fig.legend(handles, lab, loc="lower center", ncol=2)
-    fig.suptitle(f"Investito vs Cash (mediana) — {int(fixed_pct*100)}% investito", y=0.98)
-    plt.tight_layout(rect=[0, 0.05, 1, 0.95]); plt.show()
-
-# ====== Esempi BTD in GRIGLIA (asse doppio: € a sinistra, indice a destra) ======
-def plot_btd_examples_grid(
-    pct_label,
-    cash_paths,
-    trigger_paths,
-    deploy_amounts_paths,
-    market_levels,                  # matrice (SIMS, T) dell'indice di mercato (base 1.0)
-    threshold,
-    n_examples=4,
-    cols=2
-):
-    """
-    Mostra esempi in griglia con due assi Y:
-      - Asse sinistro (€, linea tratteggiata): 'Soldi risparmiati'
-      - Asse destro (Indice base 100): 'Mercato azionario'
-    Le linee verticali indicano i mesi di trigger (deploy del cash).
-    """
-    sim_count = cash_paths.shape[0]
-    n_examples = min(n_examples, sim_count)
-    sample_idx = random.sample(range(sim_count), n_examples)
-
-    rows = math.ceil(n_examples / cols)
-    fig, axes = plt.subplots(rows, cols, figsize=(7.0*cols, 3.2*rows), sharex=True)
-    if rows == 1 and cols == 1:
-        axes = np.array([[axes]])
-    elif rows == 1:
-        axes = np.array([axes])
-    axes_flat = axes.flatten()
-
-    for ax, idx in zip(axes_flat, sample_idx):
-        cas = cash_paths[idx]                  # € (sinistra)
-        mkt = market_levels[idx]               # indice (1.0, 1.1, ...)
-        mkt_idx = 100.0 * (mkt / mkt[0])       # normalizza a 100
-
-        # Asse destro per il mercato
-        ax2 = ax.twinx()
-
-        # Tracce
-        ln1, = ax2.plot(months, mkt_idx, linewidth=1.6, label="Mercato azionario (indice=100)")
-        ln2, = ax.plot(months, cas, linewidth=1.6, linestyle="--", label="Soldi risparmiati (€)")
-
-        # Trigger BTD: linee verticali sull'asse sinistro (coprono tutta l'altezza dell'asse sinistro)
-        trg = trigger_paths[idx]
-        dep = deploy_amounts_paths[idx]
-        trigger_months = months[trg]
-        for tm in trigger_months:
-            ax.axvline(tm, linewidth=0.8, alpha=0.2)
-
-        # Scatter dei deploy (in €) sul sinistro
-        if trigger_months.size > 0:
-            ax.scatter(trigger_months, dep[trg], marker="o", s=20)
-
-        # Etichette assi
-        ax.set_ylabel("€ (cash)")
-        ax2.set_ylabel("Indice (base=100)")
-
-        # Griglia sul sinistro
-        ax.grid(True, alpha=0.3)
-
-    # Nascondi assi non usati
-    for ax in axes_flat[n_examples:]:
-        ax.axis("off")
-
-    # Legenda combinata (sinistra+destra) e titolo
-    # Prendiamo le handles da primo pannello valido
-    first_ax = axes_flat[0]
-    first_ax2 = first_ax.twinx()  # crea temporaneo solo per prelevare labels se servisse
-    handles, labels = [], []
-    # Recuperiamo dal primo pannello reale (quello dentro il loop ha ln1/ln2 locali)
-    # Qui ricostruiamo le etichette per robustezza:
-    handles = []
-    labels = []
-    handles.append(plt.Line2D([0], [0]))  # placeholder, verrà sostituito subito
-    labels.append("Mercato azionario (indice=100)")
-    handles[0] = plt.Line2D([0], [0])  # rebind per sicurezza
-
-    # Meglio: ricava da un asse del loop (se esistono esempi)
-    if len(axes_flat) > 0 and n_examples > 0:
-        # Riplotta invisibile per ottenere handle/label in maniera pulita
-        tmp_ax = axes_flat[0]
-        tmp_ax2 = tmp_ax.twinx()
-        h1, l1 = tmp_ax2.get_legend_handles_labels()
-        h2, l2 = tmp_ax.get_legend_handles_labels()
-        handles = h1 + h2
-        labels = l1 + l2
-
-    fig.legend(handles, labels, loc="lower center", ncol=2)
-    fig.suptitle(
-        f"Esempi Buy The Dip — {pct_label}, soglia {int(threshold*100)}%",
-        y=0.98
-    )
-    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
-    plt.show()
-
-# ====== Frontiere efficienti (discrete) ======
-def _frontier_from_points(vols, rets):
-    order = np.argsort(vols)
-    vols_sorted = vols[order]; rets_sorted = rets[order]
-    keep_idx = []; best_ret = -np.inf
-    for i, (v, r) in enumerate(zip(vols_sorted, rets_sorted)):
-        if r >= best_ret:
-            keep_idx.append(order[i]); best_ret = r
-    return np.array(keep_idx, dtype=int)
-
-def _frontier_plot(ax, x_vols, y_rets, labels=None, title=""):
-    idx_front = _frontier_from_points(x_vols, y_rets)
-    f_order = np.argsort(x_vols[idx_front])
-    vf = x_vols[idx_front][f_order]; rf = y_rets[idx_front][f_order]
-    ax.scatter(x_vols, y_rets, s=36)
-    if labels is not None:
-        for (vx, ry, lab) in zip(x_vols, y_rets, labels):
-            ax.annotate(lab, (vx, ry), xytext=(4,2), textcoords="offset points", fontsize=8)
-    ax.plot(vf, rf, linewidth=2)
-    ax.set_title(title)
-    ax.grid(True, alpha=0.3)
-    ax.set_xlabel("Vol ann (TWR, %)")
-    ax.set_ylabel("R ann (TWR, %)")
-
-# ====== Frontiere in griglia — per % investita fissa (solo BTD) ======
-def plot_frontiers_grid_fixed_pcts(fixed_pcts: list[float], thresholds: list[float], R: np.ndarray, cols=2):
-    n = len(fixed_pcts)
-    rows = int(np.ceil(n/cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(7.0*cols, 5.5*rows))
-    axes = np.array(axes).reshape(-1)
-
-    for i, fp in enumerate(fixed_pcts):
-        vols = []
-        rets = []
-        labs = []
-        for thr in thresholds:
-            inv, cash, tot, _, _ = simulate_pct_with_strategy(fp, ANNUAL_INVEST, R, dip_threshold=thr)
-            f, v_twr, r_twr = compute_final_and_twr_metrics(tot, inv, cash, R)
-            vols.append(np.percentile(v_twr, 50) * 100)
-            rets.append(np.percentile(r_twr, 50) * 100)
-            labs.append(f"BTD {int(thr*100)}%")
-
-        _frontier_plot(axes[i], np.array(vols), np.array(rets), labels=labs,
-                       title=f"{int(fp*100)}% investito")
-
-    # Nascondi assi extra
-    for j in range(i+1, len(axes)):
-        axes[j].axis("off")
-
-    fig.suptitle("Frontiere efficienti (TWR) — griglia per % investita fissa (solo BTD)", y=0.995)
+    
+    # Add horizontal line at y=0 for Sharpe ratio
+    plt.axhline(y=0, color='red', linestyle='--', alpha=0.7)
+    
     plt.tight_layout()
+    
+    # Save the figure as high-resolution image
+    filename = f"buy_the_dip_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+    plt.savefig(filename, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    print(f"\n📊 Grafico salvato come: {filename}")
+    print(f"   Puoi aprirlo a tutto schermo per una visualizzazione dettagliata")
+    
     plt.show()
+    
+    return filename
 
-# ====== Frontiere — vista “scenario = % investito” (solo BTD) ======
-def plot_frontiers_grid_by_fixedpct(summary_df: pd.DataFrame, fixed_pcts: list[float], cols=3):
-    scenarios = [f"{int(fp*100)}% investito" for fp in fixed_pcts]
-    df = summary_df.copy()
-    df["R_%"] = df["R_ann_medio_p50"] * 100
-    df["V_%"] = df["Vol_ann_p50"] * 100
+def print_summary_conclusions(results):
+    """Print a clear summary of the simulation conclusions"""
+    print("\n" + "="*80)
+    print("CONCLUSIONI PRINCIPALI")
+    print("="*80)
+    
+    strategies = ['strategy_1'] + [f'strategy_2_{int(t*100)}p' for t in [0.05, 0.10, 0.20, 0.30]]
+    threshold_names = ['Regolare'] + ['5%', '10%', '20%', '30%']
+    
+    print(f"📊 RISULTATI MEDI (1000 simulazioni di 5 anni):")
+    print(f"{'Strategia':<12} {'Valore':<12} {'CAGR':<8} {'Volatilità':<10} {'Vittorie':<8}")
+    print("-" * 55)
+    
+    best_strategy = None
+    best_value = 0
+    
+    for i, strategy in enumerate(strategies):
+        value_col = f'{strategy}_value'
+        cagr_col = f'{strategy}_cagr'
+        vol_col = f'{strategy}_volatility'
+        
+        mean_value = results[value_col].mean()
+        mean_cagr = results[cagr_col].mean()
+        mean_vol = results[vol_col].mean()
+        
+        # Calculate win rate vs regular strategy
+        wins = (results[value_col] > results['strategy_1_value']).sum()
+        win_rate = wins / len(results) * 100
+        
+        print(f"{threshold_names[i]:<12} €{mean_value:>9,.0f} {mean_cagr:>7.2%} {mean_vol:>9.2%} {win_rate:>7.1f}%")
+        
+        if mean_value > best_value:
+            best_value = mean_value
+            best_strategy = threshold_names[i]
+    
+    print(f"\n🏆 MIGLIORE STRATEGIA: {best_strategy}")
+    print(f"💰 Valore medio: €{best_value:,.0f}")
+    
+    # Risk-adjusted return analysis
+    print(f"\n📈 ANALISI RISK-ADJUSTED RETURN:")
+    for i, strategy in enumerate(strategies):
+        value_col = f'{strategy}_value'
+        cagr_col = f'{strategy}_cagr'
+        vol_col = f'{strategy}_volatility'
+        
+        mean_cagr = results[cagr_col].mean()
+        mean_vol = results[vol_col].mean()
+        
+        if mean_vol > 0:
+            sharpe_ratio = mean_cagr / mean_vol
+            print(f"   {threshold_names[i]:<12}: Sharpe Ratio = {sharpe_ratio:.3f}")
+    
+    print(f"\n💡 RACCOMANDAZIONI:")
+    if best_strategy == 'Regolare':
+        print(f"   ✅ L'investimento regolare è la strategia più profittevole")
+    else:
+        print(f"   ✅ La strategia Buy the Dip {best_strategy} è la più profittevole")
+    
+    print(f"   📊 Considerare sempre il rapporto rischio/rendimento")
+    print(f"   ⚠️  Maggiore volatilità può significare maggiore stress emotivo")
 
-    n = len(scenarios) + 1  # +1 per "Totale"
-    rows = int(np.ceil(n/cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(6.5*cols, 5.0*rows))
-    axes = np.array(axes).reshape(-1)
-
-    for i, scn in enumerate(scenarios):
-        sub = df[df["Scenario"] == scn]
-        vols = sub["V_%"].to_numpy()
-        rets = sub["R_%"].to_numpy()
-        labels = sub["Percentuale"].astype(str).to_numpy()  # "BTD xx%"
-        _frontier_plot(axes[i], vols, rets, labels=labels, title=scn)
-
-    # Pannello "Totale"
-    all_vols = df["V_%"].to_numpy()
-    all_rets = df["R_%"].to_numpy()
-    all_labels = (df["Scenario"].astype(str) + " — " + df["Percentuale"].astype(str)).to_numpy()
-    _frontier_plot(axes[len(scenarios)], all_vols, all_rets, labels=all_labels, title="Totale")
-
-    # Nascondi eventuali assi in eccesso
-    for j in range(len(scenarios)+1, len(axes)):
-        axes[j].axis("off")
-
-    fig.suptitle("Frontiere efficienti (TWR) — per % investita fissa e totale (solo BTD)", y=0.995)
+def create_monte_carlo_analysis_image():
+    """Create a comprehensive Monte Carlo analysis with confidence intervals and quantiles"""
+    print("\n=== ANALISI MONTE CARLO CON INTERVALLI DI CONFIDENZA ===")
+    
+    # Parameters
+    n_periods = 100
+    years = 10
+    thresholds = [0.05, 0.10, 0.20, 0.30]
+    threshold_names = ['5%', '10%', '20%', '30%']
+    colors = ['red', 'orange', 'green', 'blue']
+    
+    # Get historical MSCI World ETF data for realistic parameters
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=365*20)
+    sp500_data = get_sp500_data(start_date, end_date)
+    returns = sp500_data.pct_change().dropna()
+    mean_return = returns.mean()
+    std_return = returns.std()
+    
+    print(f"Generando {n_periods} simulazioni di {years} anni ciascuna...")
+    
+    # Store results for each strategy
+    all_results = {
+        'regular': {'portfolio_values': [], 'final_cash': [], 'total_wealth': [], 'cagr': [], 'volatility': []},
+        'dip_5': {'portfolio_values': [], 'final_cash': [], 'total_wealth': [], 'cagr': [], 'volatility': []},
+        'dip_10': {'portfolio_values': [], 'final_cash': [], 'total_wealth': [], 'cagr': [], 'volatility': []},
+        'dip_20': {'portfolio_values': [], 'final_cash': [], 'total_wealth': [], 'cagr': [], 'volatility': []},
+        'dip_30': {'portfolio_values': [], 'final_cash': [], 'total_wealth': [], 'cagr': [], 'volatility': []}
+    }
+    
+    # Run Monte Carlo simulations
+    for period in range(n_periods):
+        # Generate random returns
+        random_returns = np.random.normal(mean_return, std_return, years * 12)
+        
+        # Regular strategy
+        portfolio_1_values, shares_1 = strategy_1_regular_investing(1000, random_returns)
+        final_portfolio_1 = portfolio_1_values[-1]
+        final_cash_1 = 0  # No cash saved in regular strategy
+        total_wealth_1 = final_portfolio_1 + final_cash_1
+        
+        all_results['regular']['portfolio_values'].append(final_portfolio_1)
+        all_results['regular']['final_cash'].append(final_cash_1)
+        all_results['regular']['total_wealth'].append(total_wealth_1)
+        all_results['regular']['cagr'].append(calculate_portfolio_cagr(portfolio_1_values, 1000, years))
+        all_results['regular']['volatility'].append(calculate_volatility(portfolio_1_values))
+        
+        # Dip strategies
+        for i, threshold in enumerate(thresholds):
+            crashes = simulate_market_crash(random_returns, threshold)
+            portfolio_2_values, shares_2, dip_purchases = strategy_2_dip_buying(1000, 200, random_returns, crashes)
+            
+            # Calculate final cash remaining
+            final_cash = 0
+            saved_money = 0
+            for j, ret in enumerate(random_returns):
+                saved_money += 200  # Save €200 per month
+                if j in crashes:
+                    saved_money = 0  # Spend all saved money
+            final_cash = saved_money
+            
+            final_portfolio_2 = portfolio_2_values[-1]
+            total_wealth_2 = final_portfolio_2 + final_cash
+            
+            strategy_key = f'dip_{int(threshold*100)}'
+            all_results[strategy_key]['portfolio_values'].append(final_portfolio_2)
+            all_results[strategy_key]['final_cash'].append(final_cash)
+            all_results[strategy_key]['total_wealth'].append(total_wealth_2)
+            all_results[strategy_key]['cagr'].append(calculate_portfolio_cagr(portfolio_2_values, 1000, years))
+            all_results[strategy_key]['volatility'].append(calculate_volatility(portfolio_2_values))
+    
+    # Create comprehensive visualization grid
+    fig = plt.figure(figsize=(20, 16))
+    fig.suptitle('Analisi Monte Carlo - Strategia Buy the Dip', fontsize=20, fontweight='bold')
+    
+    strategy_labels = ['Regolare'] + [f'Buy Dip {t}%' for t in threshold_names]
+    strategy_keys = ['regular'] + [f'dip_{int(t*100)}' for t in thresholds]
+    colors_plot = ['black'] + colors
+    
+    # Plot 1: Distribuzione valori portfolio con intervalli di confidenza
+    plt.subplot(2, 2, 1)
+    
+    # Calculate statistics for portfolio values
+    means = []
+    stds = []
+    
+    for key in strategy_keys:
+        values = all_results[key]['portfolio_values']
+        means.append(np.mean(values))
+        stds.append(np.std(values))
+    
+    x_pos = np.arange(len(strategy_labels))
+    
+    # Plot bars with error bars
+    bars = plt.bar(x_pos, means, yerr=stds, capsize=5, color=colors_plot, alpha=0.8, edgecolor='black', linewidth=1)
+    plt.title('1) Distribuzione Valori Portfolio con Intervalli di Confidenza', fontsize=14, fontweight='bold')
+    plt.ylabel('Valore Portfolio (€)')
+    plt.xticks(x_pos, strategy_labels, rotation=45, ha='right')
+    plt.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels
+    for bar, mean_val in zip(bars, means):
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                f'€{mean_val:,.0f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+    
+    # Plot 2: Distribuzione finale cash rimanenti
+    plt.subplot(2, 2, 2)
+    
+    # Calculate statistics for final cash
+    cash_means = []
+    cash_stds = []
+    
+    for key in strategy_keys:
+        values = all_results[key]['final_cash']
+        cash_means.append(np.mean(values))
+        cash_stds.append(np.std(values))
+    
+    # Plot bars with error bars
+    bars = plt.bar(x_pos, cash_means, yerr=cash_stds, capsize=5, color=colors_plot, alpha=0.8, edgecolor='black', linewidth=1)
+    plt.title('2) Distribuzione Finale Cash Rimanenti', fontsize=14, fontweight='bold')
+    plt.ylabel('Cash Rimanente (€)')
+    plt.xticks(x_pos, strategy_labels, rotation=45, ha='right')
+    plt.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels
+    for bar, mean_val in zip(bars, cash_means):
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                f'€{mean_val:,.0f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+    
+    # Plot 3: Distribuzione valori portfolio + cash
+    plt.subplot(2, 2, 3)
+    
+    # Calculate statistics for total wealth
+    wealth_means = []
+    wealth_stds = []
+    
+    for key in strategy_keys:
+        values = all_results[key]['total_wealth']
+        wealth_means.append(np.mean(values))
+        wealth_stds.append(np.std(values))
+    
+    # Plot bars with error bars
+    bars = plt.bar(x_pos, wealth_means, yerr=wealth_stds, capsize=5, color=colors_plot, alpha=0.8, edgecolor='black', linewidth=1)
+    plt.title('3) Distribuzione Valori Portfolio + Cash', fontsize=14, fontweight='bold')
+    plt.ylabel('Patrimonio Totale (€)')
+    plt.xticks(x_pos, strategy_labels, rotation=45, ha='right')
+    plt.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels
+    for bar, mean_val in zip(bars, wealth_means):
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
+                f'€{mean_val:,.0f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+    
+    # Plot 4: Tasso vittoria
+    plt.subplot(2, 2, 4)
+    
+    # Calculate win rates (total wealth comparison)
+    win_rates = []
+    for i, key in enumerate(strategy_keys[1:]):  # Skip regular strategy
+        wins = 0
+        for j in range(n_periods):
+            if all_results[key]['total_wealth'][j] > all_results['regular']['total_wealth'][j]:
+                wins += 1
+        win_rate = wins / n_periods * 100
+        win_rates.append(win_rate)
+    
+    bars = plt.bar(threshold_names, win_rates, color=colors, alpha=0.8, edgecolor='black', linewidth=1)
+    plt.title('4) Tasso di Vittoria (Patrimonio Totale)', fontsize=14, fontweight='bold')
+    plt.ylabel('Percentuale Vittorie (%)')
+    plt.xlabel('Threshold')
+    plt.grid(True, alpha=0.3, axis='y')
+    
+    # Add value labels
+    for bar, rate in zip(bars, win_rates):
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2., height + 0.5,
+                f'{rate:.1f}%', ha='center', va='bottom', fontsize=12, fontweight='bold')
+    
     plt.tight_layout()
+    
+    # Save the figure as high-resolution image
+    filename = f"monte_carlo_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+    plt.savefig(filename, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    print(f"\n📊 Analisi Monte Carlo salvata come: {filename}")
+    print(f"   Basata su {n_periods} simulazioni di {years} anni")
+    
+    # Print summary statistics
+    print(f"\n📈 RIEPILOGO STATISTICO:")
+    print(f"{'Strategia':<15} {'Portfolio':<12} {'Cash':<10} {'Totale':<12} {'Vittorie':<10}")
+    print("-" * 70)
+    
+    for i, key in enumerate(strategy_keys):
+        portfolio_mean = np.mean(all_results[key]['portfolio_values'])
+        cash_mean = np.mean(all_results[key]['final_cash'])
+        total_mean = np.mean(all_results[key]['total_wealth'])
+        
+        if key == 'regular':
+            win_rate = 0  # Regular strategy doesn't win against itself
+        else:
+            wins = sum(1 for j in range(n_periods) 
+                      if all_results[key]['total_wealth'][j] > all_results['regular']['total_wealth'][j])
+            win_rate = wins / n_periods * 100
+        
+        print(f"{strategy_labels[i]:<15} €{portfolio_mean:>9,.0f} €{cash_mean:>7,.0f} €{total_mean:>9,.0f} {win_rate:>8.1f}%")
+    
     plt.show()
+    
+    return filename
 
-# =========================================================
-# ========== MAIN ==========
-# % investita FISSA, variabile = Soglia BTD (incluso 0% = investe sempre tutto)
-# Nessuna baseline in nessun plot.
-# =========================================================
-SHOW_EXAMPLES = True  # mostra o meno gli esempi con trigger
+def main():
+    """Main function to run the complete analysis"""
+    print("=== SIMULAZIONE STRATEGIA 'BUY THE DIP' MULTI-THRESHOLD ===")
+    print("Confronto tra strategie di investimento con diversi livelli di threshold:")
+    print("1. Investimento regolare: €1000/mese in MSCI World ETF")
+    print("2. Buy the dip: €800/mese + €200 risparmiati per acquisti al ribasso")
+    print("   - Threshold 5%: Acquista al -5% dal picco")
+    print("   - Threshold 10%: Acquista al -10% dal picco")
+    print("   - Threshold 20%: Acquista al -20% dal picco")
+    print("   - Threshold 30%: Acquista al -30% dal picco")
+    
+    # Run Monte Carlo simulation
+    print("\nEsecuzione simulazione Monte Carlo...")
+    results = run_monte_carlo_simulation(n_simulations=1000, years=5)
+    
+    # Analyze results
+    analyze_results(results)
+    
+    # Print summary conclusions
+    print_summary_conclusions(results)
+    
+    # Create Monte Carlo analysis with confidence intervals
+    create_monte_carlo_analysis_image()
+    
+    # Show detailed example simulation with graphs
+    show_example_simulation()
+    
+    print("\n" + "="*80)
+    print("NOTE IMPORTANTI")
+    print("="*80)
+    print("• Questa è una simulazione basata su dati reali del MSCI World ETF")
+    print("• I risultati reali possono variare significativamente")
+    print("• Considerare sempre la diversificazione del portfolio")
+    print("• Consultare un consulente finanziario per decisioni reali")
 
-all_metrics_rows = []
-
-for fp in FIXED_PCTS:
-    # Serie temporali (mediane) — solo BTD
-    res_time = summarize_over_time_fixed_pct(fp, DIP_THRESHOLDS, R_base)
-    plot_total_over_time_fixed_pct(res_time, fp)
-    plot_invested_vs_cash_grid_fixed_pct(res_time, fp)
-
-    # Metriche aggregate TWR vs soglia (solo BTD)
-    df_thr = metrics_for_fixed_pct_across_thresholds(fp, DIP_THRESHOLDS, R_base)
-
-    # Linee R/Vol + barre Sharpe
-    x_labels = df_thr["Scenario"].tolist()
-    x = np.arange(len(x_labels))
-
-    plt.figure(figsize=(12,5.5))
-    plt.plot(x, df_thr["R_%"], linewidth=2, label="R% (TWR)")
-    plt.plot(x, df_thr["V_%"], linewidth=2, label="Vol% (TWR)")
-    plt.xticks(x, x_labels, rotation=0)
-    plt.title(f"{int(fp*100)}% investito — R% & Vol% (TWR) vs soglia BTD")
-    plt.ylabel("%"); plt.grid(True, alpha=0.3); plt.legend(); plt.tight_layout(); plt.show()
-
-    plt.figure(figsize=(12,5))
-    plt.bar(x, df_thr["Sharpe_TWR"])
-    plt.xticks(x, x_labels, rotation=0)
-    plt.title(f"{int(fp*100)}% investito — Sharpe (TWR) vs soglia BTD")
-    plt.ylabel("Sharpe (TWR)"); plt.grid(True, axis='y', alpha=0.3); plt.tight_layout(); plt.show()
-
-    # Righe metriche per frontiere (solo BTD)
-    scn_label = f"{int(fp*100)}% investito"
-    tmp_rows = []
-    for thr in DIP_THRESHOLDS:
-        inv, cash, tot, _, _ = simulate_pct_with_strategy(fp, ANNUAL_INVEST, R_base, dip_threshold=thr)
-        finals, vols_twr, rets_twr = compute_final_and_twr_metrics(tot, inv, cash, R_base)
-        r50 = np.percentile(rets_twr, 50)
-        v50 = np.percentile(vols_twr, 50)
-        sharpe = (r50 - RF) / v50 if v50 > 0 else np.nan
-        tmp_rows.append({
-            "Scenario": scn_label,                 # es. "50% investito"
-            "Percentuale": f"BTD {int(thr*100)}%", # solo BTD
-            "Capitale_finale_p05": np.percentile(finals, 5),
-            "Capitale_finale_p50": np.percentile(finals, 50),
-            "Capitale_finale_p95": np.percentile(finals, 95),
-            "R_ann_medio_p50":     r50,
-            "Vol_ann_p50":         v50,
-            "R_to_V_p50":          sharpe
-        })
-
-    df_fp_metrics = pd.DataFrame(tmp_rows)
-    all_metrics_rows.append(df_fp_metrics)
-
-    # (Opzionale) Esempi “buy the dip” in GRIGLIA per ciascuna soglia — con asse doppio
-    if SHOW_EXAMPLES:
-        for thr in DIP_THRESHOLDS:
-            inv, cash, tot, trig, dep = simulate_pct_with_strategy(fp, ANNUAL_INVEST, R_base, dip_threshold=thr)
-            pct_lbl = f"{int(fp*100)}%"
-            plot_btd_examples_grid(
-                pct_label=pct_lbl,
-                cash_paths=cash,
-                trigger_paths=trig,
-                deploy_amounts_paths=dep,
-                market_levels=MARKET_LEVELS,   # indice di mercato
-                threshold=thr,
-                n_examples=EXAMPLES_PER_CASE,
-                cols=EXAMPLE_GRID_COLS
-            )
-
-# A) Griglia delle frontiere per le % fisse (solo BTD)
-plot_frontiers_grid_fixed_pcts(FIXED_PCTS, DIP_THRESHOLDS, R_base, cols=2)
-
-# B) Frontiera "mega" su tutte le % fisse e soglie (Scenario = "% investito", solo BTD)
-summary_df_new = pd.concat(all_metrics_rows, ignore_index=True)
-scenario_order_new = [f"{int(fp*100)}% investito" for fp in FIXED_PCTS]
-summary_df_new["Scenario"] = pd.Categorical(summary_df_new["Scenario"], categories=scenario_order_new, ordered=True)
-thr_order = [f"BTD {int(x*100)}%" for x in DIP_THRESHOLDS]
-summary_df_new["Percentuale"] = pd.Categorical(summary_df_new["Percentuale"], categories=thr_order, ordered=True)
-summary_df_new = summary_df_new.sort_values(["Scenario", "Percentuale"]).reset_index(drop=True)
-
-plot_frontiers_grid_by_fixedpct(summary_df_new, FIXED_PCTS, cols=3)
+if __name__ == "__main__":
+    main()
