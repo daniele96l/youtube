@@ -9,7 +9,7 @@ def get_sp500_data(start_date, end_date):
     """Get MSCI World ETF data from CSV file"""
     try:
         # Load data from CSV file
-        csv_file = "iShares Core MSCI World UCITS ETF USD (Acc).csv"
+        csv_file = "../iShares Core MSCI World UCITS ETF USD (Acc).csv"
         data = pd.read_csv(csv_file, skiprows=2)  # Skip the header row and ticker row
         
         # The first column is empty, so we need to use the first column as Date
