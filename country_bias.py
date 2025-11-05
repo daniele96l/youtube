@@ -399,27 +399,6 @@ analyzer.plot_all_metrics_comparison()
 
 
 print("\n" + "="*100)
-print("SHARPE RATIO ANALYSIS")
-print("="*100)
-analyzer.plot_metric_evolution('Sharpe_Ratio')
-
-print("\n" + "="*100)
-print("SORTINO RATIO ANALYSIS")
-print("="*100)
-analyzer.plot_metric_evolution('Sortino_Ratio')
-
-print("\n" + "="*100)
-print("CAGR ANALYSIS")
-print("="*100)
-analyzer.plot_metric_evolution('CAGR_Mean (%)')
-
-print("\n" + "="*100)
-print("VOLATILITY ANALYSIS")
-print("="*100)
-analyzer.plot_metric_evolution('Volatility (%)')
-
-
-print("\n" + "="*100)
 print("MAX DRAWDOWN COMPREHENSIVE ANALYSIS")
 print("="*100 + "\n")
 analyzer.plot_max_drawdown_analysis()
