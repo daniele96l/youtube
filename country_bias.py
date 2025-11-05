@@ -387,8 +387,8 @@ analyzer = ETFPortfolioAnalyzer(
 )
 
 results = analyzer.run_full_analysis(
-    time_horizons=[5, 7, 10, 15, 20],
-    n_simulations=1000
+    time_horizons=[5, 10, 20],
+    n_simulations=10000
 )
 
 
