@@ -74,14 +74,29 @@ class ETFPortfolioAnalyzer:
         cagr = (final_values ** (1/years) - 1) * 100
 
         # Calculate annualized volatility: std of monthly returns * sqrt(12) for each simulation, then average
-        annualized_volatilities = [np.std(monthly_returns_sim[i]) * np.sqrt(12) * 100 
-                                   for i in range(n_simulations)]
+        # Vectorized calculation for better performance
+        monthly_stds = np.std(monthly_returns_sim, axis=1)
+        annualized_volatilities = monthly_stds * np.sqrt(12) * 100
         volatility = np.mean(annualized_volatilities)
-        sharpe = np.mean(cagr) / np.std(cagr) if np.std(cagr) > 0 else 0
+        
+        # Annualized mean return for this time horizon (in %)
+        annualized_mean_return = np.mean(cagr)
+        
+        # Sharpe ratio: (Mean Return - Risk Free) / Volatility (assuming 0% risk-free rate)
+        # Both are in %, so division gives ratio directly
+        sharpe = annualized_mean_return / volatility if volatility > 0 else 0
 
-        negative_returns = cagr[cagr < 0]
-        downside_std = np.std(negative_returns) if len(negative_returns) > 0 else np.std(cagr)
-        sortino = np.mean(cagr) / downside_std if downside_std > 0 else 0
+        # Sortino ratio: use downside deviation (annualized) - std of negative monthly returns
+        downside_volatilities = []
+        for i in range(n_simulations):
+            monthly_returns_i = monthly_returns_sim[i]
+            downside_months = monthly_returns_i[monthly_returns_i < 0]
+            if len(downside_months) > 0:
+                downside_vol = np.std(downside_months) * np.sqrt(12) * 100
+                downside_volatilities.append(downside_vol)
+        
+        downside_volatility = np.mean(downside_volatilities) if len(downside_volatilities) > 0 else volatility
+        sortino = annualized_mean_return / downside_volatility if downside_volatility > 0 else 0
 
         max_dd = self.calculate_max_drawdown(simulations)
 
