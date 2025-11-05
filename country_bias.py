@@ -64,14 +64,19 @@ class ETFPortfolioAnalyzer:
         n_months = years * 12
 
         simulations = np.zeros((n_simulations, n_months))
+        monthly_returns_sim = np.zeros((n_simulations, n_months))
         for i in range(n_simulations):
             monthly_returns = np.random.normal(mean_return, std_return, n_months)
+            monthly_returns_sim[i] = monthly_returns
             simulations[i] = np.cumprod(1 + monthly_returns)
 
         final_values = simulations[:, -1]
         cagr = (final_values ** (1/years) - 1) * 100
 
-        volatility = np.std([np.std(sim) for sim in simulations]) * np.sqrt(12) * 100
+        # Calculate annualized volatility: std of monthly returns * sqrt(12) for each simulation, then average
+        annualized_volatilities = [np.std(monthly_returns_sim[i]) * np.sqrt(12) * 100 
+                                   for i in range(n_simulations)]
+        volatility = np.mean(annualized_volatilities)
         sharpe = np.mean(cagr) / np.std(cagr) if np.std(cagr) > 0 else 0
 
         negative_returns = cagr[cagr < 0]
