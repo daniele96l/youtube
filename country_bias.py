@@ -362,8 +362,8 @@ print("Class defined!")
 
 
 analyzer = ETFPortfolioAnalyzer(
-    swda_path='/content/iShares Core MSCI World UCITS ETF USD (Acc).csv',
-    sxr7_path='/content/iShares Core MSCI EMU UCITS ETF EUR (Acc).csv'
+    swda_path='/Users/danieleligato/PycharmProjects/pythonProject4/iShares Core MSCI World UCITS ETF USD (Acc).csv',
+    sxr7_path='/Users/danieleligato/PycharmProjects/pythonProject4/iShares Core MSCI EMU UCITS ETF EUR (Acc).csv'
 )
 
 results = analyzer.run_full_analysis(
