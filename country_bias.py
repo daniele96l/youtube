@@ -37,7 +37,7 @@ class ETFPortfolioAnalyzer:
         print(f"Range: {self.combined_df.index.min().strftime('%Y-%m')} to {self.combined_df.index.max().strftime('%Y-%m')}")
         print(f"   Total: {len(self.combined_df)} months\n")
 
-    def create_portfolio_allocations(self, step=2.5):
+    def create_portfolio_allocations(self, step=1.0):
         allocations = []
         for swda_weight in np.arange(0, 100 + step, step):
             sxr7_weight = 100 - swda_weight
@@ -57,7 +57,7 @@ class ETFPortfolioAnalyzer:
             max_drawdowns.append(drawdown.min())
         return np.mean(max_drawdowns)
 
-    def monte_carlo_simulation(self, swda_weight, sxr7_weight, years, n_simulations=10000):
+    def monte_carlo_simulation(self, swda_weight, sxr7_weight, years, n_simulations=1000):
         portfolio_returns = self.calculate_portfolio_returns(swda_weight, sxr7_weight)
         mean_return = portfolio_returns.mean()
         std_return = portfolio_returns.std()
@@ -112,7 +112,7 @@ class ETFPortfolioAnalyzer:
             'max_drawdown': max_dd
         }
 
-    def run_full_analysis(self, time_horizons=[2, 5, 7, 10, 15, 20], n_simulations=10000):
+    def run_full_analysis(self, time_horizons=[2, 5, 7, 10, 15, 20], n_simulations=1000):
         allocations = self.create_portfolio_allocations()
         results_list = []
         total_scenarios = len(allocations) * len(time_horizons)
@@ -388,7 +388,7 @@ analyzer = ETFPortfolioAnalyzer(
 
 results = analyzer.run_full_analysis(
     time_horizons=[5, 7, 10, 15, 20],
-    n_simulations=10000
+    n_simulations=1000
 )
 
 
